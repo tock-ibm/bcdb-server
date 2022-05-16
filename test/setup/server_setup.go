@@ -260,6 +260,29 @@ func (s *Server) QueryLedgerPath(t *testing.T, startNum, endNum uint64, user str
 	return response, err
 }
 
+
+func (s *Server) QueryTxReceipt(t *testing.T, txID, user string) (*types.TxReceiptResponseEnvelope, error) {
+	client, err := s.NewRESTClient(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	userSigner, err := s.Signer(user)
+	require.NoError(t, err)
+
+	query := &types.GetTxReceiptQuery{
+		UserId:               user,
+		TxId:                 txID,
+	}
+
+	response, err := client.GetTxReceipt(&types.GetTxReceiptQueryEnvelope{
+		Payload:              query,
+		Signature:            testutils.SignatureFromQuery(t, userSigner, query),
+	})
+
+	return response, err
+}
+
 func (s *Server) QueryAugmentedBlockHeader(t *testing.T, number uint64, user string) (*types.GetAugmentedBlockHeaderResponseEnvelope, error) {
 	client, err := s.NewRESTClient(nil)
 	if err != nil {
@@ -828,6 +851,8 @@ func (s *Server) SubmitTransaction(t *testing.T, urlPath string, tx interface{})
 		return nil, err
 	}
 
+	// TODO validate server signature
+
 	receipt := txResponseEnvelope.GetResponse().GetReceipt()
 
 	if receipt != nil {
@@ -843,6 +868,47 @@ func (s *Server) SubmitTransaction(t *testing.T, urlPath string, tx interface{})
 	}
 
 	return receipt, nil
+}
+
+func (s *Server) SubmitTransactionAsync(t *testing.T, urlPath string, tx interface{}) error {
+	client, err := s.NewRESTClient(s.clientCheckRedirect)
+	if err != nil {
+		return err
+	}
+
+	response, err := client.SubmitTransaction(urlPath, tx, 0) // timeout==0 is async
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		var errMsg string
+		if response.StatusCode == http.StatusAccepted {
+			return errors.Errorf("ServerTimeout")
+		}
+		if response.Body != nil {
+			errRes := &types.HttpResponseErr{}
+			if err = json.NewDecoder(response.Body).Decode(errRes); err != nil {
+				errMsg = "(failed to parse the server's error message)"
+			} else {
+				errMsg = errRes.Error()
+			}
+		}
+
+		return errors.Errorf("failed to submit transaction, server returned: status: %s, message: %s", response.Status, errMsg)
+	}
+
+	txResponseEnvelope := &types.TxReceiptResponseEnvelope{}
+	err = json.NewDecoder(response.Body).Decode(txResponseEnvelope)
+	if err != nil {
+		t.Errorf("error: %s", err)
+		return err
+	}
+
+	// TODO validate server signature
+
+	return nil
 }
 
 func (s *Server) SetConfigTx(t *testing.T, newConfig *types.ClusterConfig, version *types.Version, signer crypto.Signer, user string) (string, *types.TxReceipt, error) {
@@ -963,7 +1029,7 @@ func (s *Server) CreateCryptoMaterials(rootCAPemCert, caPrivKey []byte) error {
 	return nil
 }
 
-func (s *Server) CreateConfigFile() error {
+func (s *Server) createConfigFile(blockCreationOverride *config.BlockCreationConf) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1009,6 +1075,10 @@ func (s *Server) CreateConfigFile() error {
 			Method: s.method,
 			File:   s.bootstrapFilePath,
 		},
+	}
+
+	if blockCreationOverride != nil {
+		localCofig.BlockCreation = *blockCreationOverride
 	}
 
 	if err := WriteLocalConfig(localCofig, s.configFilePath); err != nil {
