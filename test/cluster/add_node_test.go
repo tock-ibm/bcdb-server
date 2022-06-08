@@ -457,21 +457,30 @@ func TestAddAndRemove(t *testing.T) {
 	}, 30*time.Second, 100*time.Millisecond)
 
 	// remove nodes 1-2-3
-	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 0, []int{1, 2, 3, 4, 5}, true)
-	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 1, []int{2, 3, 4, 5}, true)
-	removeServer(t, c.Servers[leaderIndex], c, 2, []int{3, 4, 5}, true)
+	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 0, []int{1, 2, 3, 4, 5}, true, true)
+	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 1, []int{2, 3, 4, 5}, true, true)
+	removeServer(t, c.Servers[leaderIndex], c, 2, []int{3, 4, 5}, true, true)
 
 	// shutdown and remove node 4
 	require.NoError(t, c.ShutdownServer(c.Servers[3]))
 	leaderIndex = -1
 	require.Eventually(t, func() bool {
-		leaderIndex = c.AgreedLeader(t, activeServers...)
+		leaderIndex = c.AgreedLeader(t, []int{4, 5}...)
 		return leaderIndex >= 0
 	}, 30*time.Second, 100*time.Millisecond)
-	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 0, []int{4, 5}, true)
+	leaderIndex = removeServer(t, c.Servers[leaderIndex], c, 3, []int{4, 5}, true, false)
 
 	// nodes in cluster - 5,6
-	require.NoError(t, c.Restart())
+	//require.NoError(t, c.Restart()) // TODO Restart does not work after removing servers, when some are already down
+	require.NoError(t, c.ShutdownServer(c.Servers[4]))
+	require.NoError(t, c.ShutdownServer(c.Servers[5]))
+	require.NoError(t, c.StartServer(c.Servers[4]))
+	require.NoError(t, c.StartServer(c.Servers[5]))
+
+	require.Eventually(t, func() bool {
+		leaderIndex = c.AgreedLeader(t, []int{4, 5}...)
+		return leaderIndex >= 0
+	}, 30*time.Second, 100*time.Millisecond)
 
 	// add node 7
 	configEnv, err := c.Servers[leaderIndex].QueryConfig(t, "admin")
@@ -480,9 +489,16 @@ func TestAddAndRemove(t *testing.T) {
 	t.Logf("adding node-7")
 	newServer := addServerTx(t, c, setupConfig, configEnv, leaderIndex, 6)
 
-	require.NoError(t, c.Restart())
+	//require.NoError(t, c.Restart())
+	require.NoError(t, c.ShutdownServer(c.Servers[4]))
+	require.NoError(t, c.ShutdownServer(c.Servers[5]))
+	require.NoError(t, c.StartServer(c.Servers[4]))
+	require.NoError(t, c.StartServer(c.Servers[5]))
 
 	t.Logf("starting node-7")
 	require.NoError(t, c.StartServer(newServer))
-
+	require.Eventually(t, func() bool {
+		leaderIndex = c.AgreedLeader(t, []int{4, 5, 6}...)
+		return leaderIndex >= 0
+	}, 30*time.Second, 100*time.Millisecond)
 }
